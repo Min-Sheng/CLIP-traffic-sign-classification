@@ -9,9 +9,7 @@ gradio-demo-app
 ├── src
 │   ├── app.py               # Main entry point for the application
 │   ├── dataset_utils.py     # Utility functions for dataset handling
-│   ├── clip_model_utils.py   # Functions for loading and processing the CLIP model
-│   └── types
-│       └── index.py         # Type definitions used in the application
+│   └── clip_model_utils.py   # Functions for loading and processing the CLIP model
 ├── requirements.txt         # Required Python packages
 └── README.md                # Project documentation
 ```
@@ -44,7 +42,3 @@ Once the application is running, you can access it in your web browser at `http:
 1. Upload an image of a traffic sign.
 2. Click the "Submit" button to receive a prediction.
 3. The predicted label will be displayed below the image.
-
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for more details.
