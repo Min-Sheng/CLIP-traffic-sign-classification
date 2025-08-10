@@ -35,20 +35,25 @@ class TrafficSignDataset(Dataset):
         return image, label, text_prompt
 
 
-train_transform = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.RandomCrop((224, 224)),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=MEAN, std=STD),
-])
+def train_transform(image):
+    transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.RandomCrop((224, 224)),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=MEAN, std=STD),
+    ])
+    return transform(image)
 
 
-val_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=MEAN, std=STD),
-])
+def val_transform(image):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=MEAN, std=STD),
+    ])
+    return transform(image)
+
 
 def unnormalize(img_tensor):
     """Unnormalize a tensor image."""
