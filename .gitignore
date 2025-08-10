@@ -207,6 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 data/*
+!data/.gitkeep
 results/*
+!results/.gitkeep
 kaggle.json
 *.zip
