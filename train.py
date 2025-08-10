@@ -8,7 +8,6 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision.transforms.functional import to_pil_image
-from transformers import CLIPProcessor, CLIPModel
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
@@ -20,6 +19,8 @@ from rich.progress import Progress
 
 from dataset_utils import TrafficSignDataset, train_transform, val_transform, unnormalize
 from visualize_utils import TensorboardVisualizer
+from clip_model_utils import load_model_and_processor
+
 
 seed = 42
 np.random.seed(seed)
@@ -27,7 +28,7 @@ torch.manual_seed(seed)
 
 MODEL_NAME = "openai/clip-vit-base-patch32"
 DATA_ROOT = './data/traffic_Data'
-LABEL_CSV = './data/corrected_labels.csv'
+LABEL_CSV = './data/traffic_Data/corrected_labels.csv'
 
 
 def main(
@@ -48,16 +49,12 @@ def main(
     logger.remove()  # remove default console logger
     logger.add(str(log_txt_path), format="{time} {level} {message}", level="INFO", enqueue=True, mode='w')
     logger.add(sys.stdout, format="{time} {level} {message}", level="INFO", enqueue=True)
-    
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    processor = CLIPProcessor.from_pretrained(model_name)
-    model = CLIPModel.from_pretrained(model_name)
-    model.to(device)
 
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    model, processor, backend = load_model_and_processor(model_name, device=device)
     logger.info(f"CLIP model is loaded on {device}")
-   
-    data_root = './data/traffic_Data'
-    train_data_dir = Path(data_root) / 'DATA'
+
+    train_data_dir = Path(DATA_ROOT) / 'DATA'
 
     train_image_paths = []
     train_labels = []
@@ -104,17 +101,17 @@ def main(
     for epoch in range(num_epochs):
         logger.info(f"Epoch {epoch + 1}/{num_epochs}")
 
-        train_loss = train_step(model, processor, train_dataloader, optimizer, loss_img_fn, loss_txt_fn, device)
+        train_loss = train_step(model, processor, train_dataloader, optimizer, loss_img_fn, loss_txt_fn, device, backend)
 
         # eval every n epoch
         if (epoch + 1) % eval_every == 0 or epoch == num_epochs - 1:
             val_loss, val_acc, similarity_matrix, class_names = val_step(
-                model, processor, val_dataloader, loss_img_fn, loss_txt_fn, device, label_dict
+                model, processor, val_dataloader, loss_img_fn, loss_txt_fn, device, label_dict, backend,
             )
 
             # TensorBoard logger
             visualizer.log_metrics(train_loss, val_loss, val_acc, epoch)
-            
+
             sampled_images = sample_images_per_class(val_dataset, label_dict)
             visualizer.log_similarity_matrix(similarity_matrix, class_names, epoch, sampled_images=sampled_images)
 
@@ -146,7 +143,7 @@ def main(
     visualizer.close()
 
 
-def train_step(model, processor, dataloader, optimizer, loss_img_fn, loss_txt_fn, device):
+def train_step(model, processor, dataloader, optimizer, loss_img_fn, loss_txt_fn, device, backend):
     total_loss = 0
     model.train()
     with Progress() as progress:
@@ -156,11 +153,26 @@ def train_step(model, processor, dataloader, optimizer, loss_img_fn, loss_txt_fn
             inputs = processor(
                 text=text_prompts, return_tensors='pt', padding=True, truncation=True,
             ).to(device)
-            inputs['pixel_values'] = images.to(device)
-            outputs = model(**inputs)
 
-            logits_per_image = outputs.logits_per_image
-            logits_per_text = outputs.logits_per_text
+            if backend == "huggingface":
+                inputs['pixel_values'] = images.to(device)
+                outputs = model(**inputs)
+                logits_per_image = outputs.logits_per_image # (B, B)
+                logits_per_text = outputs.logits_per_text   # (B, B)
+
+            else:  # openclip
+                text_inputs = inputs
+                images = images.to(device)
+                image_features = model.encode_image(images)
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+
+                text_features = model.encode_text(text_inputs)
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+                logit_scale = model.logit_scale.exp()
+
+                logits_per_image = logit_scale * image_features @ text_features.T   # (B, B)
+                logits_per_text = logit_scale * text_features @ image_features.T    # (B, B)
 
             batch_size = images.size(0)
             ground_truth = torch.arange(batch_size, dtype=torch.long, device=device)
@@ -181,7 +193,7 @@ def train_step(model, processor, dataloader, optimizer, loss_img_fn, loss_txt_fn
     return avg_loss
 
 
-def val_step(model, processor, dataloader, loss_img_fn, loss_txt_fn, device, label_dict):
+def val_step(model, processor, dataloader, loss_img_fn, loss_txt_fn, device, label_dict, backend):
     model.eval()
     total_loss = 0
     all_preds, all_labels = [], []
@@ -196,42 +208,60 @@ def val_step(model, processor, dataloader, loss_img_fn, loss_txt_fn, device, lab
 
     class_image_feature_sum = {class_id: None for class_id in class_ids_sorted}
     class_image_feature_count = {class_id: 0 for class_id in class_ids_sorted}
+
     with torch.no_grad():
-        all_text_features = model.get_text_features(**all_text_inputs)
+
+        logit_scale = model.logit_scale.exp()
+
+        if backend == "huggingface":
+            all_text_features = model.get_text_features(**all_text_inputs)
+        else:  # openclip
+            all_text_features = model.encode_text(all_text_inputs)
+        
         all_text_features = all_text_features / all_text_features.norm(dim=-1, keepdim=True)
 
         with Progress() as progress:
             task = progress.add_task("[magenta]Validating...", total=len(dataloader))
             for batch in dataloader:
                 images, labels, text_prompts = batch
-                inputs = processor(
+                images = images.to(device)
+                text_batch_inputs = processor(
                     text=text_prompts, return_tensors='pt', padding=True, truncation=True,
                 ).to(device)
-                inputs['pixel_values'] = images.to(device)
 
-                outputs = model(**inputs)
-
-                logits_per_image = outputs.logits_per_image
-                logits_per_text = outputs.logits_per_text
-
-                batch_size = images.size(0)
-                ground_truth = torch.arange(batch_size, dtype=torch.long, device=device)
-
-                loss_img = loss_img_fn(logits_per_image, ground_truth)
-                loss_txt = loss_txt_fn(logits_per_text, ground_truth)
-                loss = (loss_img + loss_txt) / 2
-
+                # --- Loss Calculation (was already correct) ---
+                if backend == "huggingface":
+                    # For loss, we can use the convenient model output which includes scaling
+                    outputs = model(pixel_values=images, input_ids=text_batch_inputs['input_ids'])
+                    logits_per_image = outputs.logits_per_image
+                    logits_per_text = outputs.logits_per_text
+                else:  # openclip
+                    image_features_for_loss = model.encode_image(images)
+                    image_features_for_loss /= image_features_for_loss.norm(dim=-1, keepdim=True)
+                    text_features_for_loss = model.encode_text(text_batch_inputs)
+                    text_features_for_loss /= text_features_for_loss.norm(dim=-1, keepdim=True)
+                    logits_per_image = logit_scale * image_features_for_loss @ text_features_for_loss.T
+                    logits_per_text = logits_per_image.T
+                
+                ground_truth = torch.arange(len(images), dtype=torch.long, device=device)
+                loss = (loss_img_fn(logits_per_image, ground_truth) + loss_txt_fn(logits_per_text, ground_truth)) / 2
                 total_loss += loss.item()
 
-                image_features = model.get_image_features(pixel_values=inputs.pixel_values)
+                # --- Accuracy Calculation (Zero-Shot) ---
+                if backend == "huggingface":
+                    image_features = model.get_image_features(pixel_values=images)
+                else: # openclip
+                    image_features = model.encode_image(images)
+                
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
-                similarity_logits = image_features @ all_text_features.T
+                similarity_logits = logit_scale * image_features @ all_text_features.T
                 preds = similarity_logits.argmax(dim=1).cpu().numpy()
 
                 all_preds.extend(preds)
                 all_labels.extend(labels.numpy())
 
+                # Accumulate features for similarity matrix visualization
                 for feature, label in zip(image_features, labels):
                     class_id = int(label.item())
                     if class_image_feature_sum[class_id] is None:
@@ -242,7 +272,7 @@ def val_step(model, processor, dataloader, loss_img_fn, loss_txt_fn, device, lab
 
                 progress.update(task, advance=1)
 
-        # Calculate mean features
+        # Calculate mean features for visualization
         class_mean_image_features_dict = {}
         for class_id in class_ids_sorted:
             if class_image_feature_count[class_id] > 0:
@@ -250,15 +280,13 @@ def val_step(model, processor, dataloader, loss_img_fn, loss_txt_fn, device, lab
                 mean_feature = mean_feature / mean_feature.norm(dim=-1, keepdim=True)
                 class_mean_image_features_dict[class_id] = mean_feature
             else:
-                class_mean_image_features_dict[class_id] = torch.zeros_like(next(iter(class_image_feature_sum.values()))).to(device)
+                # Use a zero tensor as a placeholder if a class has no images in the validation set
+                any_feature = next(iter(class_image_feature_sum.values()))
+                class_mean_image_features_dict[class_id] = torch.zeros_like(any_feature).to(device)
 
-        all_mean_image_features = []
-        for class_id in sorted(class_mean_image_features_dict.keys()):
-            feature = class_mean_image_features_dict[class_id] # (num_classes, hidden_dim)
-            all_mean_image_features.append(feature)
-        all_mean_image_features = torch.stack(all_mean_image_features, dim=0)  # (num_classes, hidden_dim)
+        all_mean_image_features = torch.stack([class_mean_image_features_dict[cid] for cid in class_ids_sorted])
 
-        similarity_matrix = all_text_features @ all_mean_image_features.T  # (num_classes, num_classes)
+        similarity_matrix = (all_text_features @ all_mean_image_features.T)
 
     acc = accuracy_score(all_labels, all_preds)
     avg_loss = total_loss / len(dataloader)
