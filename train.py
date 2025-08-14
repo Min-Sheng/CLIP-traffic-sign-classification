@@ -27,12 +27,12 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 
 MODEL_NAME = "openai/clip-vit-base-patch32"
-DATA_ROOT = './data/traffic_Data'
-LABEL_CSV = './data/traffic_Data/corrected_labels.csv'
+DATASET = "traffic_Data"  # ["traffic_Data", "ttsrb"]
 
 
 def main(
     model_name,
+    dataset_name,
     batch_size,
     num_epochs,
     learning_rate,
@@ -40,6 +40,7 @@ def main(
     save_every=5,
     patience=5,
     eval_every=1,
+    load_pretrained_from=None,
 ):
      # TensorBoard visualizer
     visualizer = TensorboardVisualizer(log_dir=str(Path(output_dir) / "tensorboard"))
@@ -54,25 +55,58 @@ def main(
     model, processor, backend = load_model_and_processor(model_name, device=device)
     logger.info(f"CLIP model is loaded on {device}")
 
-    train_data_dir = Path(DATA_ROOT) / 'DATA'
+    if load_pretrained_from is not None:
+        model.load_state_dict(torch.load(load_pretrained_from, map_location=device))
+        logger.info(f"Pretrained weight is loaded from: {load_pretrained_from}.")
 
-    train_image_paths = []
-    train_labels = []
+    data_root = Path("./data") / dataset_name
 
-    for class_folder in sorted(list(train_data_dir.iterdir())):
-        if class_folder.is_dir():
-            for file_path in class_folder.iterdir():
-                if file_path.suffix == '.png':
-                    train_image_paths.append(str(file_path))
-                    train_labels.append(int(class_folder.stem))
+    if dataset_name == "traffic_Data":
+        train_data_dir = data_root / 'DATA'
+        train_image_paths = []
+        train_labels = []
 
-    df = pd.DataFrame({'Path': train_image_paths, 'ClassId': train_labels})
+        for class_folder in sorted(list(train_data_dir.iterdir())):
+            if class_folder.is_dir():
+                for file_path in class_folder.iterdir():
+                    if file_path.suffix == '.png':
+                        train_image_paths.append(str(file_path))
+                        train_labels.append(int(class_folder.stem))
 
-    label_map = pd.read_csv(LABEL_CSV)
-    label_dict = dict(zip(label_map['ClassId'], label_map['Name']))
+        label_csv = data_root / 'corrected_labels.csv'
+        label_map = pd.read_csv(label_csv)
+        label_dict = dict(zip(label_map['ClassId'], label_map['Name']))
+        
+        df = pd.DataFrame({'Path': train_image_paths, 'ClassId': train_labels})
 
+    elif dataset_name == "ttsrb":
+        train_data_dir = data_root / 'train'
+        train_plus_data_dir = data_root / 'train_plus'
+
+        train_image_paths = []
+        train_labels = []
+
+        for class_folder in sorted(list(train_data_dir.iterdir())) + sorted(list(train_plus_data_dir.iterdir())):
+            if class_folder.is_dir():
+                for file_path in class_folder.iterdir():
+                    if file_path.suffix == '.png':
+                        train_image_paths.append(str(file_path))
+                        train_labels.append(class_folder.stem)
+        
+        class_names = sorted(np.unique(train_labels))
+        class_ids = np.arange(len(class_names))
+        label_dict = dict(zip(class_ids, class_names))
+        reversed_label_dict = {v: k for k, v in label_dict.items()}
+        train_class_ids = [reversed_label_dict[train_label] for train_label in train_labels]
+
+        df = pd.DataFrame({'Path': train_image_paths, 'ClassId': train_class_ids})
+    
+    else:
+        raise ValueError(f"Unsupported dataset: {DATASET}")
+    
     df['ClassName'] = df['ClassId'].map(label_dict) # for prompting
     train_df, val_df = train_test_split(df, test_size=0.1, stratify=df['ClassId'], random_state=seed)
+    logger.info(f"Dataset: {dataset_name} are loaded.")
 
     train_dataset = TrafficSignDataset(train_df, transform=train_transform)
     val_dataset = TrafficSignDataset(val_df, transform=val_transform)
@@ -332,6 +366,7 @@ def save_args(args, output_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a CLIP model on traffic sign dataset")
     parser.add_argument('--model_name', type=str, default=MODEL_NAME, help='Name of the CLIP model to use')
+    parser.add_argument('--dataset_name', type=str, default=DATASET, help='Name of the dataset to use')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training')
     parser.add_argument('--num_epochs', type=int, default=100, help='Number of epochs for training')
     parser.add_argument('--learning_rate', type=float, default=5e-7, help='Learning rate for the optimizer')
@@ -339,10 +374,22 @@ if __name__ == "__main__":
     parser.add_argument('--save_every', type=int, default=5, help='Save model every n epochs')
     parser.add_argument('--patience', type=int, default=5, help='Early stopping patience')
     parser.add_argument('--eval_every', type=int, default=1, help='Evaluate every n epochs')
+    parser.add_argument('--load_pretrained_from', type=str, required=False, help='Load pretrained weight from the path.')
 
     args = parser.parse_args()
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     save_args(args, args.output_dir)
 
-    main(args.model_name, args.batch_size, args.num_epochs, args.learning_rate, args.output_dir, args.save_every, args.eval_every)
+    main(
+        args.model_name, 
+        args.dataset_name, 
+        args.batch_size, 
+        args.num_epochs, 
+        args.learning_rate, 
+        args.output_dir, 
+        args.save_every,
+        args.patience,
+        args.eval_every,
+        args.load_pretrained_from,
+    )
