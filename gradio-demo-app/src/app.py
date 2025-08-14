@@ -19,9 +19,10 @@ else:
 
 # List of available models and their paths
 MODEL_CONFIGS = {
-    "openai/clip-vit-base-patch32": "/home/vincentwu/clip_hw/HW1/results/ViT_B_patch32/best_model.pt",
-    "openai/clip-vit-base-patch16": "/home/vincentwu/clip_hw/HW1/results/ViT_B_patch16/best_model.pt",
-    "openai/clip-vit-large-patch14": "/home/vincentwu/clip_hw/HW1/results/ViT_L_patch14/best_model.pt",
+    "openai/clip-vit-base-patch32:finetune-on-traffic-sign": "/home/vincentwu/clip_hw/HW1/results/ViT_B_patch32/best_model.pt",
+    "openai/clip-vit-base-patch16:finetune-on-traffic-sign": "/home/vincentwu/clip_hw/HW1/results/ViT_B_patch16/best_model.pt",
+    "openai/clip-vit-base-patch32:finetune-on-ttsrb": "/home/vincentwu/clip_hw/HW1/results/ViT_B_patch32_ttsrb/best_model.pt",
+    "openai/clip-vit-base-patch16:finetune-on-ttsrb": "/home/vincentwu/clip_hw/HW1/results/ViT_B_patch16_ttsrb/best_model.pt",
 }
 
 # Labels for the closed-set (traffic sign) task
@@ -53,7 +54,7 @@ loaded_models = {}
 for i, (model_name, model_path) in enumerate(MODEL_CONFIGS.items()):
     device = f"cuda:{i % num_gpus}" if num_gpus > 0 else "cpu"
     print(f"Loading model '{model_name}' onto device '{device}'...")
-    model, processor, backend = load_model_and_processor(model_name, device=device)
+    model, processor, backend = load_model_and_processor(model_name.split(':')[0], device=device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
@@ -126,9 +127,9 @@ def run_open_vocab_prediction(image, model_name, custom_labels_str, prompt_templ
             image_features = model.encode_image(image_tensor)
         image_features /= image_features.norm(dim=-1, keepdim=True)
 
-    logit_scale = model.logit_scale.exp()
-    similarity = (logit_scale * image_features @ text_features.T).softmax(dim=-1)
-    scores = similarity[0].cpu().numpy()
+        logit_scale = model.logit_scale.exp()
+        similarity = (logit_scale * image_features @ text_features.T).softmax(dim=-1)
+        scores = similarity[0].cpu().numpy()
 
     top_result = {custom_labels[i]: float(scores[i]) for i in range(len(custom_labels))}
     barplot_data = pd.DataFrame({"Class": custom_labels, "Confidence": scores})

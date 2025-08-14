@@ -1,3 +1,13 @@
+import matplotlib.font_manager as fm
+from matplotlib import rcParams
+
+font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+prop = fm.FontProperties(fname=font_path)
+family_name = prop.get_name()
+
+rcParams['font.family'] = family_name
+rcParams['axes.unicode_minus'] = False
+
 import matplotlib.pyplot as plt
 import numpy as np
 import io
