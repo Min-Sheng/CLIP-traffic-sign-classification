@@ -141,7 +141,7 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     gr.Markdown("# CLIP Model Explorer")
     model_selector = gr.Dropdown(
         choices=list(MODEL_CONFIGS.keys()), 
-        value="openai/clip-vit-base-patch16", 
+        value="openai/clip-vit-base-patch16:finetune-on-traffic-sign", 
         label="Select Model (Applies to all tabs)"
     )
     
