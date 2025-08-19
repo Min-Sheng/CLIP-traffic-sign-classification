@@ -208,6 +208,7 @@ __marimo__/
 
 data/*
 !data/.gitkeep
+!data/traffic_Data/corrected_labels.csv
 results/*
 !results/.gitkeep
 kaggle.json
